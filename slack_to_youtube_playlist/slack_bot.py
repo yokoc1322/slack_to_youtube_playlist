@@ -40,4 +40,6 @@ def posted_youtube_url(**payload):
 
 
 rtm_client = RTMClient(token=slack_api_token)
+logger.info('Start RTMClient')
 rtm_client.start()
+logger.info('End RTMClient')
