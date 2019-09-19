@@ -1,157 +1,109 @@
 import os
 import json
 import logging
-from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 import requests
 
-filename = Path(__file__).name.split('.')[0]
 
-logging.basicConfig(level='INFO')
-logger = logging.getLogger(filename)
+class Youtube():
+    def __init__(self, client_id, client_secret, refresh_token):
+        logging.basicConfig(level='INFO')
+        self.logger = logging.getLogger(self.__class__.__name__)
 
-# TODO: グローバルで持たないようにする
-secrets_dict = {
-    'access_token': None,
-    'client_id': None,
-    'client_secret': None,
-    'refresh_token': None
-}
+        self.access_token = ''
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.refresh_token = refresh_token
 
+        self.refresh_access_token()
 
-def set_secrets(client_id, client_secret, refresh_token):
-    TOKEN_URL = 'https://accounts.google.com/o/oauth2/token'
+    def refresh_access_token(self):
+        TOKEN_URL = 'https://accounts.google.com/o/oauth2/token'
 
-    res = requests.post(TOKEN_URL, params={
-        'client_id': client_id,
-        'client_secret': client_secret,
-        'refresh_token': refresh_token,
-        'grant_type': 'refresh_token'
-    })
+        res = requests.post(TOKEN_URL, params={
+            'client_id': self.client_id,
+            'client_secret': self.client_secret,
+            'refresh_token': self.refresh_token,
+            'grant_type': 'refresh_token'
+        })
 
-    global secrets_dict
+        res.raise_for_status()
 
-    res.raise_for_status()
-    access_token = json.loads(res.content.decode())['access_token']
-    secrets_dict = {
-        'access_token': access_token,
-        'client_id': client_id,
-        'client_secret': client_secret,
-        'refresh_token': refresh_token
-    }
+        self.access_token = json.loads(res.content.decode())['access_token']
 
+    def logger_response(self, res):
+        self.logger.info(res.status_code)
+        self.logger.info(res.content.decode())
 
-def refresh_secrets():
-    TOKEN_URL = 'https://accounts.google.com/o/oauth2/token'
-
-    global secrets_dict
-
-    res = requests.post(TOKEN_URL, params={
-        'client_id': secrets_dict['client_id'],
-        'client_secret': secrets_dict['client_secret'],
-        'refresh_token': secrets_dict['refresh_token'],
-        'grant_type': 'refresh_token'
-    })
-
-    res.raise_for_status()
-    access_token = json.loads(res.content.decode())['access_token']
-    secrets_dict['access_token'] = access_token
-
-
-def logger_response(res):
-    logger.info(res.status_code)
-    logger.info(res.content.decode())
-
-
-def get_youtube_resource(url, params={}):
-    global secrets_dict
-    headers = {'Authorization': 'Bearer {}'.format(
-        secrets_dict['access_token'])}
-    res = requests.get(url, headers=headers, params=params)
-    logger_response(res)
-    # TODO: リファクタリング
-    if res.status_code == 401:
-        refresh_secrets()
-        headers = {'Authorization': 'Bearer {}'.format(
-            secrets_dict['access_token'])}
+    def get_youtube_resource(self, url, params={}, retry_token_expires=True):
+        headers = {'Authorization': 'Bearer {}'.format(self.access_token)}
         res = requests.get(url, headers=headers, params=params)
-        logger_response(res)
-    return res
+        self.logger_response(res)
 
+        if res.status_code == 401 and retry_token_expires:
+            self.refresh_access_token()
+            res = self.get_youtube_resource(url, params, False)
 
-def post_youtube_resource(url, params={}, json_data={}):
-    global secrets_dict
-    headers = {'Authorization': 'Bearer {}'.format(
-        secrets_dict['access_token'])}
-    res = requests.post(url, headers=headers, params=params, json=json_data)
-    logger_response(res)
-    # TODO: リファクタリング
-    if res.status_code == 401:
-        refresh_secrets()
-        headers = {'Authorization': 'Bearer {}'.format(
-            secrets_dict['access_token'])}
+        return res
+
+    def post_youtube_resource(self, url, params={}, json_data={}, retry_token_expires=True):
+        headers = {'Authorization': 'Bearer {}'.format(self.access_token)}
         res = requests.post(url, headers=headers,
                             params=params, json=json_data)
-        logger_response(res)
-    return res
+        self.logger_response(res)
 
+        if res.status_code == 401 and retry_token_expires:
+            self.refresh_access_token()
+            res = self.post_youtube_resource(url, params, json_data, False)
 
-# def get_playlists_items(access_token, playlist_id):
-#     PLAYLIST_ITEMS_URL = 'https://www.googleapis.com/youtube/v3/playlistItems'
-#     params = {
-#         'part': 'snippet',
-#         'playlistId': playlist_id
-#     }
-#     res = get_youtube_resource(PLAYLIST_ITEMS_URL, params)
+        return res
 
-
-def insert_playlists_items(playlist_id, video_id):
-    PLAYLIST_ITEMS_URL = 'https://www.googleapis.com/youtube/v3/playlistItems'
-    params = {
-        'part': 'snippet',
-    }
-    data = {
-        'snippet': {
-            'playlistId': playlist_id,
-            'resourceId': {
-                'kind': 'youtube#video',
-                'videoId': video_id
+    def insert_playlists_items(self, playlist_id, video_id):
+        PLAYLIST_ITEMS_URL = 'https://www.googleapis.com/youtube/v3/playlistItems'
+        params = {
+            'part': 'snippet',
+        }
+        data = {
+            'snippet': {
+                'playlistId': playlist_id,
+                'resourceId': {
+                    'kind': 'youtube#video',
+                    'videoId': video_id
+                },
             },
-        },
-    }
-    res = post_youtube_resource(PLAYLIST_ITEMS_URL, params, data)
-    logger.info(res.status_code)
-    logger.info(res.content)
+        }
+        res = self.post_youtube_resource(PLAYLIST_ITEMS_URL, params, data)
+        self.logger.info(res.status_code)
+        self.logger.info(res.content)
 
-
-def get_video_id(url_str):
-    url = urlparse(url_str)
-    video_id = ''
-    if url.netloc == 'www.youtube.com':
-        query = parse_qs(url.query)
-        if 'v' not in query:
+    def get_video_id(self, url_str):
+        url = urlparse(url_str)
+        video_id = ''
+        if url.netloc == 'www.youtube.com':
+            query = parse_qs(url.query)
+            if 'v' not in query:
+                raise ValueError(
+                    "Cannot find 'v' query in the url: {}".format(url_str))
+            video_id = query['v'][0]
+        elif url.netloc == 'youtu.be':
+            try:
+                video_id = url.path.split('/')[1]
+            except IndexError:
+                raise ValueError(
+                    "Cannot find video_id in path in the url {}".format(url_str))
+        else:
             raise ValueError(
-                "Cannot find 'v' query in the url: {}".format(url_str))
-        video_id = query['v'][0]
-    elif url.netloc == 'youtu.be':
+                "Not support netloc of the url: {}".format(url_str))
+        return video_id
+
+    def insert_video_to_playlist_by_url(self, playlist_id, url):
         try:
-            video_id = url.path.split('/')[1]
-        except IndexError:
-            raise ValueError(
-                "Cannot find video_id in path in the url {}".format(url_str))
-    else:
-        raise ValueError("Not support netloc of the url: {}".format(url_str))
-    return video_id
-
-
-def insert_video_to_playlist_by_url(playlist_id, url):
-    try:
-        video_id = get_video_id(url)
-    except ValueError as e:
-        logger.info(e)
-        return
-    insert_playlists_items(playlist_id, video_id)
+            video_id = self.get_video_id(url)
+        except ValueError as e:
+            self.logger.info(e)
+            return
+        self.insert_playlists_items(playlist_id, video_id)
 
 
 if __name__ == '__main__':
@@ -160,8 +112,9 @@ if __name__ == '__main__':
     refresh_token = os.environ['YOUTUBE_REFRESH_TOKEN']
     playlist_id = os.environ['YOUTUBE_PLAYLIST_ID']
 
-    set_secrets(client_id, client_secret, refresh_token)
+    youtube = Youtube(client_id, client_secret, refresh_token)
 
     # url = 'https://www.youtube.com/watch?v=gmRy-JW5aps'
     url = 'https://www.youtube.com/watch?v=SX_ViT4Ra7k'
-    insert_video_to_playlist_by_url(playlist_id, url)
+
+    youtube.insert_video_to_playlist_by_url(playlist_id, url)
